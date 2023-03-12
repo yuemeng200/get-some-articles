@@ -1,114 +1,110 @@
-const axios = require('axios');
-const cheerio = require('cheerio');
-const fs = require('fs');
-const docx = require('docx');
+const axios = require("axios");
+const cheerio = require("cheerio");
+const fs = require("fs");
+const docx = require("docx");
 
-const baseUrl = 'https://language.chinadaily.com.cn/news_bilingual/'
-
-async function getHtml (url) {
-  let res = await axios.get(url)
-  return res.data
+// 获取链接的 html
+async function getHtml(url) {
+  let res = await axios.get(url);
+  return res.data;
 }
 
-async function getAllArticelUrl (url, page = 10) {
-  let allPagesRequest = []
-  for(let i = 1; i <= page; i++) {
-    let r = axios.get(url + `page_${i}.html`)
-    allPagesRequest.push(r)
-  }
-  let res_list = await Promise.all(allPagesRequest)
-  let allArticelsUrl = []
-  res_list.forEach(item => {
-    const html = item.data;
-    const $ = cheerio.load(html);
-    const links = $('.gy_box_img');
-    links.each((_, link) => {
-      let href = 'https://' + $(link).attr('href').slice(2)
-      allArticelsUrl.push(href)
-    });
-  })
-  return allArticelsUrl
+// 获取所有文章的 url
+async function getAllArticelUrl(url, total = 10) {
+  let htmls = await Promise.all(
+    Array.from({ length: total }, (_, i) => i + 1).map((page) =>
+      getHtml(`${url}page_${page}.html`)
+    )
+  );
+  return htmls.map(html => {
+    const $ = cheerio.load(html)
+    return $('.gy_box_img').map((_, link) =>
+      "https:" + $(link).attr("href")
+    ).toArray()
+  }).flat()
 }
 
-function dealHtml (data) {
+// 处理文章的html
+function dealHtml(data) {
   const $ = cheerio.load(data);
-  let title_zh = $('.main_title1').text().replace(/【.*】/g, "");
-  let title_en = $('.main_title2').text();
-  let list = $('.mian_txt > p').map((_, ele) => $(ele).text()).toArray().filter(item => item.trim().length > 0).slice(1)
-  // 处理来源
-  let pos = -1
-  for(let i = list.length -1; i >= 0; i --) {
-    if (list[i].match(/^【相关词汇】/)) {
+  let title_zh = $(".main_title1")
+    .text()
+    .replace(/【.*】/g, "");
+  let title_en = $(".main_title2").text();
+  
+  // 所有非空白行
+  let list = $(".mian_txt > p")
+    .map((_, ele) => $(ele).text())
+    .toArray()
+    .filter((item) => item.trim().length > 0)
+
+  list = list.slice(1) // 去除摘要
+
+  // 去除无效信息
+  let pos = -1;
+  for (let i = 0; i < list.length; i ++) {
+    if (list[i].match(/^(【相关词汇】)|(来源：)/)) {
       pos = i
       break
-    }
+    }  
   }
-  if (pos) {
+  if (pos != -1) {
     list = list.slice(0, pos)
   }
-  if (pos == -1) {
-    for(let i = list.length -1; i >= 0; i --) {
-      if (list[i].match(/^来源：/)) {
-        pos = i
-        break
-      }
-    }
-    if (pos) {
-      list = list.slice(0, pos)
-    }
-  }
+
   // 添加空段落
-  let p_list = []
+  let p_list = [];
   list.forEach((item, index) => {
-    p_list.push(item)
+    p_list.push(item);
     if (index % 2 == 1) {
-      p_list.push('')
+      p_list.push("");
     }
-  })
+  });
   return {
     title_zh,
     title_en,
-    p_list
-  }
+    p_list,
+  };
 }
 
-function generateDocx (rawData) {
-  let { title_en, title_zh, p_list} = rawData
+function generateSection (rawData) {
+  let { title_en, title_zh, p_list } = rawData;
 
-  const titleZh = new docx.Paragraph({
+  let titleParagraphStyle = {
     heading: docx.HeadingLevel.HEADING_1,
     alignment: docx.AlignmentType.CENTER,
     spacing: {
       line: 360,
-    },
+    }
+  }
+  let titleTextStyle = {
+    bold: true,
+    size: 28,
+    color: "#000000",
+  }
+
+  const titleZh = new docx.Paragraph({
+    ...titleParagraphStyle,
     children: [
       new docx.TextRun({
         text: title_zh,
-        bold: true,
-        font: '宋体',
-        size: 28,
-        color: '#000000'
-      })
-    ]
+        font: "宋体",
+        ...titleTextStyle
+      }),
+    ],
   });
 
   const titleEn = new docx.Paragraph({
-    heading: docx.HeadingLevel.HEADING_1,
-    alignment: docx.AlignmentType.CENTER,
-    spacing: {
-      line: 360,
-    },
+    ...titleParagraphStyle,
     children: [
       new docx.TextRun({
         text: title_en,
-        bold: true,
-        font: 'Times New Roman',
-        size: 28,
-        color: '#000000'
-      })
-    ]
+        font: "Times New Roman",
+        ...titleTextStyle,
+      }),
+    ],
   });
-  
+
   let paragraphs = p_list.map((text, index) => {
     const para = new docx.Paragraph({
       spacing: {
@@ -120,46 +116,59 @@ function generateDocx (rawData) {
       children: [
         new docx.TextRun({
           text,
-          font: index % 3 == 0 ? 'Times New Roman' : '宋体',
+          font: index % 3 == 0 ? "Times New Roman" : "宋体",
           size: 24,
-        })
-      ]
+        }),
+      ],
     });
-    return para
-  })
-  return [titleEn, titleZh, ...paragraphs]
+    return para;
+  });
 
+  return {
+    properties: {
+      type: docx.SectionType.NEXT_PAGE,
+    },
+    children: [titleEn, titleZh, ...paragraphs],
+  };
 }
 
-async function main () {
-  let urls = await getAllArticelUrl(baseUrl, 30)
-  let all = []
-  let index = 0, total = 0
-  while (1) {
-    let html = await getHtml(urls[index])
-    let rawData = dealHtml(html)
-    const chineseRegex = /[\u4E00-\u9FFF]/; // 中文范围
-    const englishRegex = /[a-zA-Z]/; // 英文范围
-    let hasEnAndZh = chineseRegex.test(rawData.p_list[0])
-    if (rawData.title_en && rawData.title_zh && !hasEnAndZh) {
-      all.push(...generateDocx(rawData))
-      total ++
-      console.log('total:' + total);
-      console.log('index:' + index);
-      if (total == 200) {
+// baseUrl, 页数, 文章数
+async function main(baseUrl, page = 50, num = 200) {
+  let urls = await getAllArticelUrl(baseUrl, page);
+  let sections = [];
+  let index = 0,
+    total = 0;
+  while (total < num) {
+    let html = await getHtml(urls[index]);
+    let rawData = dealHtml(html);
+
+    // 检查格式
+    let hasChinese = false
+    let p_list = rawData.p_list
+    for (let i = 0; i < p_list.length; i ++) {
+      if (i % 3 == 0 && /[\u4E00-\u9FFF]/.test(p_list[i])) {
+        hasChinese = true
         break
       }
     }
-    index ++
+    // 首段存在中文暴力丢弃
+    if (rawData.title_en && rawData.title_zh && ! hasChinese) {
+      sections.push(generateSection(rawData))
+      console.log(`completed: ${++ total}, scanNumber: ${index}`);
+    }
+    index++;
   }
+  
   const doc = new docx.Document({
-    sections: [{
-      children: all
-    }]
+    sections,
   });
+
   docx.Packer.toBuffer(doc).then((buffer) => {
     // 将 buffer 写入文件
-    fs.writeFileSync('./test.docx', buffer)
+    fs.writeFileSync("./output/test.docx", buffer);
   });
 }
-main()
+
+const baseUrl = "https://language.chinadaily.com.cn/news_bilingual/";
+
+main(baseUrl, 50, 200);
