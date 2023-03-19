@@ -3,6 +3,8 @@ const cheerio = require("cheerio");
 const fs = require("fs");
 const docx = require("docx");
 
+let all_length = 0
+
 // 获取链接的 html
 async function getHtml(url) {
   let res = await axios.get(url);
@@ -12,7 +14,7 @@ async function getHtml(url) {
 // 获取所有文章的 url
 async function getAllArticelUrl(url, total = 10) {
   let htmls = await Promise.all(
-    Array.from({ length: total }, (_, i) => i + 1).map((page) =>
+    Array.from({ length: 100 }, (_, i) => i + 51).map((page) =>
       getHtml(`${url}page_${page}.html`)
     )
   );
@@ -51,10 +53,15 @@ function dealHtml(data) {
   if (pos != -1) {
     list = list.slice(0, pos)
   }
+  let temp = [], len = 0
+  for (let i = 1; i < list.length; i += 2) {
+    temp.push(list[i], list[i - 1])
+    len += list[i].length
+  }
 
   // 添加空段落
   let p_list = [];
-  list.forEach((item, index) => {
+  temp.forEach((item, index) => {
     p_list.push(item);
     if (index % 2 == 1) {
       p_list.push("");
@@ -64,6 +71,7 @@ function dealHtml(data) {
     title_zh,
     title_en,
     p_list,
+    len
   };
 }
 
@@ -116,7 +124,7 @@ function generateSection (rawData) {
       children: [
         new docx.TextRun({
           text,
-          font: index % 3 == 0 ? "Times New Roman" : "宋体",
+          font: index % 3 == 0 ? "宋体" : "Times New Roman",
           size: 24,
         }),
       ],
@@ -128,17 +136,18 @@ function generateSection (rawData) {
     properties: {
       type: docx.SectionType.NEXT_PAGE,
     },
-    children: [titleEn, titleZh, ...paragraphs],
+    children: [titleZh, titleEn, ...paragraphs],
   };
 }
 
 // baseUrl, 页数, 文章数
 async function main(baseUrl, page = 50, num = 200) {
   let urls = await getAllArticelUrl(baseUrl, page);
+  console.log(urls);
   let sections = [];
   let index = 0,
     total = 0;
-  while (total < num) {
+  while (all_length < 55000) {
     let html = await getHtml(urls[index]);
     let rawData = dealHtml(html);
 
@@ -146,15 +155,16 @@ async function main(baseUrl, page = 50, num = 200) {
     let hasChinese = false
     let p_list = rawData.p_list
     for (let i = 0; i < p_list.length; i ++) {
-      if (i % 3 == 0 && /[\u4E00-\u9FFF]/.test(p_list[i])) {
+      if (i % 3 == 1 && /[\u4E00-\u9FFF]/.test(p_list[i])) {
         hasChinese = true
         break
       }
     }
     // 首段存在中文暴力丢弃
     if (rawData.title_en && rawData.title_zh && ! hasChinese) {
+      all_length += rawData.len
       sections.push(generateSection(rawData))
-      console.log(`completed: ${++ total}, scanNumber: ${index}`);
+      console.log(`completed: ${++ total}, scanNumber: ${index}, length: ${all_length}`);
     }
     index++;
   }
